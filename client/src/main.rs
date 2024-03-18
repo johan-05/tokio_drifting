@@ -1,32 +1,89 @@
-extern crate ffmpeg_next as ffmpeg;
-
-use std::env;
-use std::error::Error;
-use std::time::Duration;
-use std::thread;
-
+use tokio::io::{self, Interest};
 use tokio::net::TcpStream;
-use tokio::io::{self, Interest, AsyncWriteExt};
 
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode; 
+use sdl2::keyboard::Keycode;
 use sdl2::pixels::PixelFormatEnum;
 
-use ffmpeg::media;
-use ffmpeg::format::{Pixel, input};
-use ffmpeg::util::frame::video::Video;
-use ffmpeg::codec::Context as CodecContext;
-use ffmpeg::software::scaling::{context::Context, flag::Flags};
+use std::error::Error;
+
+//const BEGIN_STREAM: u8 = 123;
 
 
-const BEGIN_STREAM:u8 = 123;
 
-fn main()-> Result<(), Box<dyn Error>>{
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    println!("let the pain begin");
+    let sdl_context = sdl2::init().unwrap();
+    println!("created sdl context");
+    let video_subsystem = sdl_context.video().unwrap();
+    println!("created sdl video subsystem");
+    let window = video_subsystem
+        .window("rust-sdl2 demo", 640, 360)
+        .position_centered()
+        .build()
+        .unwrap();
+
+    println!("created sdl window");
+
+    let mut canvas = window.into_canvas().build()?;
+    let mut event_pump = sdl_context.event_pump()?;
+    let texture_creator = canvas.texture_creator();
+
+    let connection = TcpStream::connect("127.0.0.1:6969").await?;
+    let mut pixel_buf:Vec<u8> = Vec::with_capacity(691200);
+    
+    loop {
+        let ready = connection.ready(Interest::READABLE).await?;
+        if ready.is_readable() {
+            match connection.try_read(&mut pixel_buf) {
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    panic!("paniced with {}", e)
+                }
+                Ok(ref c) if *c==0=>{continue;}
+                Ok(c) => {
+                    println!("read {} bytes", c);
+                    let mut texture = texture_creator.create_texture_streaming(
+                        PixelFormatEnum::RGB24,
+                        640,
+                        360,
+                    )?;
+                    texture.update(None, pixel_buf.as_slice(), 3 * 640)?;
+
+                    canvas.clear();
+                    canvas.copy(&texture, None, None)?;
+                    canvas.present();
+                }
+            }
+
+            for event in event_pump.poll_iter() {
+                match event {
+                    Event::Quit { .. }
+                    | Event::KeyDown {
+                        keycode: Some(Keycode::Escape),
+                        ..
+                    } => {
+                        println!("process stopped");
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+
+
+/*fn not_main()-> Result<(), Box<dyn Error>>{
     let sdl_context = sdl2::init().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
 
     let window = video_subsystem
-        .window("rust-sdl2 demo", 960, 540)
+        .window("rust-sdl2 demo", 640, 360)
         .position_centered()
         .build()
         .unwrap();
@@ -35,39 +92,14 @@ fn main()-> Result<(), Box<dyn Error>>{
     let mut event_pump = sdl_context.event_pump()?;
     let texture_creator = canvas.texture_creator();
 
-    ffmpeg::init()?;
-
-    let mut ictx = input(&env::args().nth(1).expect("Cannot open file."))?;
-    let input = ictx
-        .streams()
-        .best(media::Type::Video)
-        .ok_or(ffmpeg::Error::StreamNotFound)?;
-
-    let video_stream_index = input.index();
-
-    let context_decoder = CodecContext::from_parameters(input.parameters())?;
-    let mut decoder = context_decoder.decoder().video()?;
-    let mut scaler = Context::get(
-        decoder.format(),
-        decoder.width(),
-        decoder.height(),
-        Pixel::RGB24,
-        960,
-        540,
-        Flags::BILINEAR,
-    )?;
-
-
-    println!("format {:?}", decoder.format());
-
     while let Some((stream, packet)) = ictx.packets().next(){
-        
+
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit {..} |
                 Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
                     println!("process stopped");
-                    return Ok(());             
+                    return Ok(());
                 },
                 _ => {}
             }
@@ -81,15 +113,16 @@ fn main()-> Result<(), Box<dyn Error>>{
                 scaler.run(&decoded, &mut rgb_frame)?;
 
                 let mut texture = texture_creator.create_texture_streaming(
-                    PixelFormatEnum::RGB24, 
-                    960, 
-                    540,
+                    PixelFormatEnum::RGB24,
+                    640,
+                    360,
                 )?;
                 texture.update(
-                    None, 
-                    rgb_frame.plane::<[u8;3]>(0).concat().as_slice(), 
+                    None,
+                    rgb_frame.plane::<[u8;3]>(0).concat().as_slice(),
                     3*rgb_frame.width() as usize
                 )?;
+                println!("size: {}", 3*rgb_frame.width()*rgb_frame.width());
                 //println!("width {}", rgb_frame.width());
 
                 canvas.clear();
@@ -97,38 +130,9 @@ fn main()-> Result<(), Box<dyn Error>>{
                 canvas.present();
                 //println!("frame");
                 thread::sleep(Duration::from_millis(16));
-            }   
+            }
         }
     }
     return Ok(());
 }
-
-
-
-
-#[allow(dead_code)]
-async fn not_main()-> Result<(), Box<dyn Error>>{
-    let mut connection = TcpStream::connect("127.0.0.1:6969").await?;
-    loop{
-        let connection_ready = connection.ready(Interest::WRITABLE).await?;
-        if connection_ready.is_writable(){
-            connection.write_all(&[BEGIN_STREAM]).await?;
-            break;
-        }
-    }
-    let mut incomming_message_buffer = [0; 256];
-    loop{
-        let ready = connection.ready(Interest::READABLE).await?;
-        if ready.is_readable() {
-            match connection.try_read(&mut incomming_message_buffer){
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
-                }
-                Err(e)=>{panic!("paniced with {}", e)}
-                Ok(c)=>{println!("read {} bytes", c)}
-            }
-            let mess = String::from_utf8(incomming_message_buffer.to_vec())?;
-            println!("{}", mess);
-        }
-    }
-}
+*/
